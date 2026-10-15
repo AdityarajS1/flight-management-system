@@ -1,0 +1,25 @@
+services:
+  jenkins:
+    image: flight-management-jenkins:local
+    build:
+      context: ../..
+      dockerfile: ci/jenkins/Dockerfile
+    container_name: flight-management-jenkins
+    user: "0:0"
+    restart: unless-stopped
+    environment:
+      JAVA_OPTS: "-Xms256m -Xmx768m -Djava.awt.headless=true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - jenkins-home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - pipeline
+
+volumes:
+  jenkins-home:
+
+networks:
+  pipeline:
+    name: flight-management-ci

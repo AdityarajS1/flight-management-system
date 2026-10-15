@@ -291,41 +291,63 @@ Selenium login/search/booking/cancellation tests, and a Docker image build in
 that order. A failed build or test fails the pipeline and prevents image
 publishing and deployment. Deployment runs only from the `main` branch.
 
-Configure a dedicated Linux Jenkins agent with Java 17, Node.js 20+/npm,
-Docker (daemon access), `curl`, `jq`, and `kubectl`. Ports 3306, 4444, 8085, and 1025
-must be available on that agent while tests run. Set the Jenkins parameters
-`IMAGE_REPOSITORY` and `K8S_NAMESPACE` to match your GHCR package and cluster.
-`IMAGE_REPOSITORY` must use the fixed `ghcr.io/owner/image` form. Create Jenkins credentials with
-the fixed IDs `flight-registry` (a package-scoped registry username/password)
-and `flight-kubeconfig` (a kubeconfig secret file); these IDs and the registry
-host are intentionally not build parameters. The Kubernetes cluster must already have a reachable MySQL database and a
-`flight-management-secrets` Secret in the selected namespace containing the application Secret with `DB_URL`,
-`DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET`, `ADMIN_PASSWORD`, and any required
-`ADMIN_EMAIL`, email, and payment settings. `JWT_SECRET` must be unique and at
-least 32 characters; admin passwords must be at least 12 characters.
-Create the namespace and the secrets before the first deployment. Create them
-without committing secret values:
+#### Local Jenkins setup (Docker Desktop)
 
-```bash
-kubectl create namespace flight-management
-kubectl create secret generic flight-management-secrets -n flight-management \
-  --from-literal=DB_URL='jdbc:mysql://mysql.example.svc.cluster.local:3306/flight_management' \
-  --from-literal=DB_USERNAME='<database-user>' \
-  --from-literal=DB_PASSWORD='<database-password>' \
-  --from-literal=JWT_SECRET='<unique-random-secret-32-characters-or-more>' \
-  --from-literal=ADMIN_EMAIL='admin@example.com' \
-  --from-literal=ADMIN_PASSWORD='<unique-password-12-characters-or-more>'
-kubectl create secret generic grafana-admin-credentials -n flight-management \
-  --from-literal=admin-password='<unique-grafana-password>'
+The checked-in Jenkins image contains Java, Node.js, Git, Docker CLI, `curl`,
+`jq`, `kubectl`, and the required Pipeline/GitHub plugins. Start it from the
+repository root:
+
+```powershell
+docker compose -f .\ci\jenkins\compose.yaml up --build -d
 ```
 
-The example at `k8s/secret.example.yaml` is a template only; do not apply it
-without replacing every placeholder. The pushed image must be publicly
-pullable by the cluster; for a private registry, add an image pull secret to
-`k8s/deployment.yaml`.
+Open [http://localhost:8080](http://localhost:8080). Retrieve the initial
+one-time password with
+`docker exec flight-management-jenkins cat /var/jenkins_home/secrets/initialAdminPassword`,
+then finish the Jenkins setup wizard. This local Jenkins container mounts the
+Docker Desktop socket; anyone with Jenkins administrator access can control
+the local Docker engine, so use it only on a trusted development machine.
 
-Backend tests use an isolated in-memory H2 database; Selenium tests start
-disposable MySQL, MailHog, and Selenium containers and remove them afterward.
+In Jenkins, create a **Multibranch Pipeline** job. Add the GitHub repository
+`https://github.com/AdityarajS1/flight-management-system`, leave credentials
+empty if the repository is public, and set the script path to `Jenkinsfile`.
+SCM polling runs every five minutes; configure a GitHub webhook only if Jenkins
+has a reachable HTTPS URL.
+
+Before the first main-branch deployment, enable Kubernetes in Docker Desktop,
+select the `docker-desktop` context, and create Kubernetes secrets from the
+ignored local `.env` file:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\setup-k8s-secrets.ps1
+```
+
+The script keeps values out of the console, creates/updates the
+`flight-management` namespace and required secrets, and stores a generated
+MySQL root password in the ignored `.env` file. The cluster needs its default
+StorageClass. `k8s/database.yaml` deploys MySQL with a persistent volume;
+`k8s/mailhog.yaml` provides a non-delivering SMTP sink for the demo.
+
+Add two Jenkins credentials with these exact IDs:
+
+- `flight-registry`: Username with password; use your GitHub username and a
+  GitHub Personal Access Token with `write:packages` (and `read:packages` if
+  needed). Do not paste the token into source files or chat.
+- `flight-kubeconfig`: Secret file; upload the Docker Desktop kubeconfig at
+  `$HOME\.kube\config`. Keep this file private.
+
+The default image repository is
+`ghcr.io/adityarajs1/flight-management-system`. Make the resulting GitHub
+Container Registry package public so the local cluster can pull it, or add an
+image pull secret to the app Deployment. The Jenkins build publishes only from
+`main`; deployment also requires the two Jenkins credentials and prepared
+Kubernetes secrets.
+
+Backend tests use an isolated in-memory H2 database by default. Jenkins
+overrides the test datasource to use disposable MySQL; Selenium tests start
+disposable MySQL, MailHog, and Selenium containers on the private Jenkins Docker
+network and remove them afterward.
 The pipeline builds the deployable application image only after all test
 stages pass. Kubernetes application manifests are in `k8s/`;
 Prometheus and Grafana are installed from `k8s/monitoring/`. To demonstrate the
@@ -334,11 +356,10 @@ frontend test runner executes an intentionally failing Jest assertion. The
 pipeline must then mark Selenium, Docker image build, and Kubernetes deployment
 as skipped. Do not enable this parameter for a normal build.
 
-The Jenkinsfile is ready to use with a GitHub-backed Jenkins Pipeline job, but
-this workspace is not connected to a GitHub remote and does not have a
-Kubernetes context configured. Configure the GitHub repository/webhook, Jenkins
-plugins and credentials, and a reachable cluster before claiming that remote
-CI/CD deployment has been demonstrated.
+The repository is connected to GitHub. The Jenkinsfile polls its configured
+SCM branch every five minutes; a GitHub webhook can be added for faster
+triggers. Jenkins credentials, the Kubernetes context, and public package
+access must be configured before the pipeline can publish and deploy.
 
 For a local failure-gate check, run `npm ci` in `frontend/`, then run these
 PowerShell commands. Jest should fail the named demo test; this local check
@@ -351,19 +372,12 @@ npm.cmd test -- --watchAll=false --runInBand
 Remove-Item Env:DEMONSTRATE_TEST_FAILURE
 ```
 
-To connect GitHub, push this project to a repository and create a Jenkins
-Pipeline job using **Pipeline script from SCM**, the Git repository URL, and
-the root `Jenkinsfile`. Configure the GitHub Branch Source/GitHub integration
-and a webhook to notify Jenkins of pushes and pull requests. The Jenkins agent
-must be Linux-based and have the tools listed above; configure `flight-registry`
-and `flight-kubeconfig` credentials before enabling deployment.
-
 ## 🧪 **Testing**
 
 ### **Backend Tests**
 ```bash
-# Backend tests use the isolated H2 database in src/test/resources.
-# MySQL is used by the Docker Compose app and Selenium integration flow.
+# Backend tests use isolated H2 by default; set DB_URL/DB_USERNAME/DB_PASSWORD
+# to use MySQL, as the Jenkins pipeline does.
 cd backend
 ./mvnw test
 

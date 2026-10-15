@@ -8,11 +8,15 @@ pipeline {
         disableConcurrentBuilds()
     }
 
+    triggers {
+        pollSCM('H/5 * * * *')
+    }
+
     parameters {
         string(
             name: 'IMAGE_REPOSITORY',
-            defaultValue: 'ghcr.io/your-org/flight-management',
-            description: 'GHCR repository to publish from main, e.g. ghcr.io/your-org/flight-management'
+            defaultValue: 'ghcr.io/adityarajs1/flight-management-system',
+            description: 'Lowercase GHCR repository to publish from main'
         )
         string(
             name: 'K8S_NAMESPACE',
@@ -33,6 +37,8 @@ pipeline {
         TEST_ADMIN_EMAIL = 'ci-admin@example.test'
         TEST_ADMIN_PASSWORD = 'ci-only-admin-password'
         TEST_JWT_SECRET = 'ci-only-jwt-signing-key-not-for-production-2026'
+        CI_DOCKER_NETWORK = 'flight-management-ci'
+        DEPLOY_TOOL_IMAGE = 'flight-management-jenkins:local'
         BACKEND_TEST_DB = "flight-ci-db-${BUILD_NUMBER}"
         E2E_TEST_DB = "flight-e2e-db-${BUILD_NUMBER}"
         E2E_MAIL = "flight-e2e-mail-${BUILD_NUMBER}"
@@ -49,7 +55,7 @@ pipeline {
         stage('Build') {
             steps {
                 dir('backend') {
-                    sh './mvnw -B -DskipTests package'
+                    sh 'sh ./mvnw -B -DskipTests package'
                 }
             }
         }
@@ -58,9 +64,10 @@ pipeline {
             steps {
                 sh '''
                     docker run --detach --name "$BACKEND_TEST_DB" \
+                      --network "$CI_DOCKER_NETWORK" \
                       -e MYSQL_ROOT_PASSWORD="$TEST_DB_PASSWORD" \
                       -e MYSQL_DATABASE="$TEST_DB_NAME" \
-                      -p 127.0.0.1:3306:3306 mysql:8.4
+                      mysql:8.4
                     for attempt in $(seq 1 60); do
                       if docker exec "$BACKEND_TEST_DB" mysqladmin ping \
                         --host=127.0.0.1 --user="$TEST_DB_USER" \
@@ -76,7 +83,7 @@ pipeline {
                 '''
                 dir('backend') {
                     withEnv([
-                        "DB_URL=jdbc:mysql://127.0.0.1:3306/${env.TEST_DB_NAME}",
+                        "DB_URL=jdbc:mysql://${env.BACKEND_TEST_DB}:3306/${env.TEST_DB_NAME}",
                         "DB_USERNAME=${env.TEST_DB_USER}",
                         "DB_PASSWORD=${env.TEST_DB_PASSWORD}",
                         "ADMIN_EMAIL=${env.TEST_ADMIN_EMAIL}",
@@ -84,7 +91,7 @@ pipeline {
                         "ADMIN_NAME=CI Admin",
                         "JWT_SECRET=${env.TEST_JWT_SECRET}"
                     ]) {
-                        sh './mvnw -B test'
+                        sh 'sh ./mvnw -B test'
                     }
                 }
             }
@@ -110,14 +117,16 @@ pipeline {
             steps {
                 sh '''
                     docker run --detach --name "$E2E_TEST_DB" \
+                      --network "$CI_DOCKER_NETWORK" \
                       -e MYSQL_ROOT_PASSWORD="$TEST_DB_PASSWORD" \
                       -e MYSQL_DATABASE="$TEST_DB_NAME" \
-                      -p 127.0.0.1:3306:3306 mysql:8.4
+                      mysql:8.4
                     docker run --detach --name "$E2E_MAIL" \
-                      -p 127.0.0.1:1025:1025 mailhog/mailhog:v1.0.1
+                      --network "$CI_DOCKER_NETWORK" \
+                      mailhog/mailhog:v1.0.1
                     docker run --detach --name "$E2E_SELENIUM" --shm-size=2g \
-                      --add-host=host.docker.internal:host-gateway \
-                      -p 127.0.0.1:4444:4444 selenium/standalone-chrome:4.27.0
+                      --network "$CI_DOCKER_NETWORK" \
+                      selenium/standalone-chrome:4.27.0
 
                     for attempt in $(seq 1 60); do
                       if docker exec "$E2E_TEST_DB" mysqladmin ping \
@@ -132,7 +141,7 @@ pipeline {
                       sleep 2
                     done
                     for attempt in $(seq 1 60); do
-                      if curl --fail --silent http://127.0.0.1:4444/status >/dev/null; then
+                      if curl --fail --silent "http://$E2E_SELENIUM:4444/status" >/dev/null; then
                         break
                       fi
                       if [ "$attempt" -eq 60 ]; then
@@ -143,14 +152,14 @@ pipeline {
                     done
 
                     nohup env \
-                      DB_URL="jdbc:mysql://127.0.0.1:3306/$TEST_DB_NAME" \
+                      DB_URL="jdbc:mysql://$E2E_TEST_DB:3306/$TEST_DB_NAME" \
                       DB_USERNAME="$TEST_DB_USER" \
                       DB_PASSWORD="$TEST_DB_PASSWORD" \
                       ADMIN_EMAIL="$TEST_ADMIN_EMAIL" \
                       ADMIN_PASSWORD="$TEST_ADMIN_PASSWORD" \
                       ADMIN_NAME="CI Admin" \
                       JWT_SECRET="$TEST_JWT_SECRET" \
-                      SPRING_MAIL_HOST=127.0.0.1 \
+                      SPRING_MAIL_HOST="$E2E_MAIL" \
                       SPRING_MAIL_PORT=1025 \
                       SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH=false \
                       SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE=false \
@@ -175,9 +184,9 @@ pipeline {
                 '''
                 dir('frontend') {
                     withEnv([
-                        'APP_BASE_URL=http://host.docker.internal:8085',
-                        'API_BASE_URL=http://127.0.0.1:8085',
-                        'SELENIUM_REMOTE_URL=http://127.0.0.1:4444/wd/hub'
+                        'APP_BASE_URL=http://jenkins:8085',
+                        'API_BASE_URL=http://jenkins:8085',
+                        "SELENIUM_REMOTE_URL=http://${env.E2E_SELENIUM}:4444/wd/hub"
                     ]) {
                         sh 'npm run test:e2e'
                     }
@@ -240,27 +249,47 @@ pipeline {
                         docker push "$PUBLISHED_IMAGE"
                         docker logout ghcr.io
 
-                        trap 'rm -f .jenkins-namespace.yaml .jenkins-deployment.yaml' EXIT
-                        kubectl create namespace "$K8S_NAMESPACE" \
-                          --dry-run=client --output=yaml > .jenkins-namespace.yaml
-                        kubectl apply --filename=.jenkins-namespace.yaml
-                        kubectl apply --namespace "$K8S_NAMESPACE" \
-                          --filename=k8s/configmap.yaml
-                        sed "s|__IMAGE__|$PUBLISHED_IMAGE|g" k8s/deployment.yaml \
-                          > .jenkins-deployment.yaml
-                        kubectl apply --namespace "$K8S_NAMESPACE" \
-                          --filename=.jenkins-deployment.yaml
-                        kubectl apply --namespace "$K8S_NAMESPACE" \
-                          --filename=k8s/service.yaml
-                        kubectl rollout status \
-                          "deployment/flight-management" \
-                          --namespace "$K8S_NAMESPACE" --timeout=180s
-                        kubectl apply --namespace "$K8S_NAMESPACE" \
-                          --kustomize=k8s/monitoring
-                        kubectl rollout status deployment/prometheus \
-                          --namespace "$K8S_NAMESPACE" --timeout=180s
-                        kubectl rollout status deployment/grafana \
-                          --namespace "$K8S_NAMESPACE" --timeout=180s
+                        deploy_helper="flight-deploy-${BUILD_NUMBER}"
+                        trap 'docker rm --force "$deploy_helper" >/dev/null 2>&1 || true' EXIT
+                        docker create --name "$deploy_helper" --network host \
+                          "$DEPLOY_TOOL_IMAGE" sleep infinity >/dev/null
+                        docker start "$deploy_helper" >/dev/null
+                        docker exec "$deploy_helper" mkdir -p /workspace/k8s
+                        docker cp k8s/. "$deploy_helper:/workspace/k8s/"
+                        docker cp "$KUBECONFIG" "$deploy_helper:/tmp/kubeconfig"
+                        docker exec --env K8S_NAMESPACE="$K8S_NAMESPACE" \
+                          --env PUBLISHED_IMAGE="$PUBLISHED_IMAGE" \
+                          "$deploy_helper" sh -eu -c '
+                            export KUBECONFIG=/tmp/kubeconfig
+                            chmod 600 "$KUBECONFIG"
+                            kubectl create namespace "$K8S_NAMESPACE" \
+                              --dry-run=client --output=yaml | kubectl apply --filename=-
+                            kubectl apply --namespace "$K8S_NAMESPACE" \
+                              --filename=/workspace/k8s/configmap.yaml
+                            kubectl apply --namespace "$K8S_NAMESPACE" \
+                              --filename=/workspace/k8s/mailhog.yaml
+                            kubectl rollout status deployment/mailhog \
+                              --namespace "$K8S_NAMESPACE" --timeout=180s
+                            kubectl apply --namespace "$K8S_NAMESPACE" \
+                              --filename=/workspace/k8s/database.yaml
+                            kubectl rollout status statefulset/flight-management-db \
+                              --namespace "$K8S_NAMESPACE" --timeout=300s
+                            sed "s|__IMAGE__|$PUBLISHED_IMAGE|g" \
+                              /workspace/k8s/deployment.yaml \
+                              > /tmp/flight-management-deployment.yaml
+                            kubectl apply --namespace "$K8S_NAMESPACE" \
+                              --filename=/tmp/flight-management-deployment.yaml
+                            kubectl apply --namespace "$K8S_NAMESPACE" \
+                              --filename=/workspace/k8s/service.yaml
+                            kubectl rollout status deployment/flight-management \
+                              --namespace "$K8S_NAMESPACE" --timeout=180s
+                            kubectl apply --namespace "$K8S_NAMESPACE" \
+                              --kustomize=/workspace/k8s/monitoring
+                            kubectl rollout status deployment/prometheus \
+                              --namespace "$K8S_NAMESPACE" --timeout=180s
+                            kubectl rollout status deployment/grafana \
+                              --namespace "$K8S_NAMESPACE" --timeout=180s
+                          '
                     '''
                 }
             }
