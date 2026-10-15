@@ -1,0 +1,79 @@
+services:
+  database:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: flight_management
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the root .env file}
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping --host=127.0.0.1 --user=root --password=$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      DB_URL: jdbc:mysql://database:3306/flight_management
+      DB_USERNAME: root
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the root .env file}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (32+ characters) in the root .env file}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@flyhigh.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD (12+ characters) in the root .env file}
+      SPRING_MAIL_HOST: mailhog
+      SPRING_MAIL_PORT: 1025
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH: "false"
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE: "false"
+    ports:
+      - "8085:8085"
+    depends_on:
+      database:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - "8025:8025"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./../k8s/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      app:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in the root .env file}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./../k8s/monitoring/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+      - ./../k8s/monitoring/dashboard-provider.yml:/etc/grafana/provisioning/dashboards/provider.yml:ro
+      - ./../k8s/monitoring/dashboard.json:/var/lib/grafana/dashboards/flight-management.json:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  mysql-data:
+  prometheus-data:
+  grafana-data:

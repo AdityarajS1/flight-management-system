@@ -1,0 +1,9 @@
+.git
+.github
+**/node_modules
+frontend/build
+frontend/e2e-failure.png
+backend/.env
+**/.env
+.jenkins-*
+observability/.env

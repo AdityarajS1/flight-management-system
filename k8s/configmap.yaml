@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flight-management-config
+data:
+  SERVER_PORT: "8085"
+  SPRING_JPA_SHOW_SQL: "false"
+  LOGGING_LEVEL_COM_FLIGHT_BACKEND: "INFO"
+  MANAGEMENT_METRICS_DISTRIBUTION_PERCENTILES_HISTOGRAM_HTTP_SERVER_REQUESTS: "true"

@@ -1,0 +1,37 @@
+{"properties": [
+  {
+    "name": "admin.email",
+    "type": "java.lang.String",
+    "description": "Default admin user email address for system initialization."
+  },
+  {
+    "name": "admin.password",
+    "type": "java.lang.String",
+    "description": "Default admin user password for system initialization."
+  },
+  {
+    "name": "admin.name",
+    "type": "java.lang.String",
+    "description": "Default admin user display name for system initialization."
+  },
+  {
+    "name": "razorpay.key.id",
+    "type": "java.lang.String",
+    "description": "Razorpay API key ID for payment processing."
+  },
+  {
+    "name": "razorpay.key.secret",
+    "type": "java.lang.String",
+    "description": "Razorpay API key secret for payment processing."
+  },
+  {
+    "name": "jwt.expiration",
+    "type": "java.lang.String",
+    "description": "A description for 'jwt.expiration'"
+  },
+  {
+    "name": "jwt.secret",
+    "type": "java.lang.String",
+    "description": "A description for 'jwt.secret'"
+  }
+]}
