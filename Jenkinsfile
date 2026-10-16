@@ -228,8 +228,15 @@ pipeline {
                         !(imageRepository ==~ /ghcr\.io\/[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9._-]*/)) {
                         error('IMAGE_REPOSITORY must be a valid ghcr.io/owner/image repository.')
                     }
+                    def sourceCommit = sh(
+                        returnStdout: true,
+                        script: 'git rev-parse --verify HEAD'
+                    ).trim()
+                    if (!(sourceCommit ==~ /[0-9a-fA-F]{40}/)) {
+                        error('Could not determine the checked-out Git commit for the image tag.')
+                    }
                     env.PUBLISHED_IMAGE =
-                        "${imageRepository}:${env.GIT_COMMIT.take(12)}"
+                        "${imageRepository}:${sourceCommit.take(12)}"
                 }
                 withCredentials([
                     usernamePassword(
